@@ -1,0 +1,29 @@
+# Local verification uses the ingress-nginx controller (kind's documented pattern,
+# see infra/k8s/kind-cluster.yaml). Production replaces the controller with a
+# cloud load balancer + WAF in front of it (Architecture §8) — this resource's
+# routing rules stay the same either way, only what sits in front of the cluster
+# changes.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: udos
+  namespace: udos
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: 'true'
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: api
+                port: { number: 3000 }
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port: { number: 3000 }

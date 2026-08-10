@@ -1,0 +1,146 @@
+"""
+UDOS Dashboard/Aggregation API — Wave 0 + Wave 1.
+REST (openapi.yaml) owns CRUD/command operations; GraphQL exists specifically for
+read-shaped aggregation queries a dashboard needs in one round trip (Architecture §4).
+Every field below is resolved against the read-model layer (Architecture §10 CQRS-lite),
+never against live joins across the transactional tables.
+"""
+
+scalar DateTime
+scalar Decimal
+scalar UUID
+
+directive @requiresPermission(code: String!) on FIELD_DEFINITION
+
+type Query {
+  """Chairman/Executive dashboard — RBAC-gated to roles with the executive-dashboard permission."""
+  chairmanDashboard(range: DateRangeInput!): ChairmanDashboard!
+    @requiresPermission(code: "dashboard:chairman:read")
+
+  """Registrar/Principal operational dashboard, campus-scoped via the caller's ABAC context."""
+  operationalDashboard(range: DateRangeInput!): OperationalDashboard!
+    @requiresPermission(code: "dashboard:operational:read")
+
+  """A single student's personal dashboard — self-service for Student/Parent roles."""
+  studentDashboard(studentId: UUID!): StudentDashboard!
+    @requiresPermission(code: "dashboard:student:read")
+}
+
+input DateRangeInput {
+  granularity: DateGranularity!
+  from: DateTime!
+  to: DateTime!
+}
+
+enum DateGranularity {
+  DAILY
+  WEEKLY
+  MONTHLY
+  SEMESTER
+  YEARLY
+  CUSTOM
+}
+
+# ---------------------------------------------------------------------------
+# Chairman Dashboard
+# ---------------------------------------------------------------------------
+
+type ChairmanDashboard {
+  studentCount: KpiWithTrend!
+  admissions: AdmissionsSummary!
+  revenue: RevenueSummary!
+  outstandingFees: Decimal!
+  dailyCollection: [TimeSeriesPoint!]!
+  facultyCount: Int!
+  employeeCount: Int!
+  attendanceSummary: AttendanceSummary!
+  departmentPerformance: [DepartmentPerformance!]!
+}
+
+type KpiWithTrend {
+  value: Int!
+  """Percentage change vs. the prior period of the same granularity."""
+  trendPercent: Decimal!
+}
+
+type AdmissionsSummary {
+  leadsTotal: Int!
+  applicationsTotal: Int!
+  enrolledTotal: Int!
+  conversionRatePercent: Decimal!
+  byProgram: [ProgramAdmissionBreakdown!]!
+}
+
+type ProgramAdmissionBreakdown {
+  programId: UUID!
+  programName: String!
+  applications: Int!
+  enrolled: Int!
+  seatsAvailable: Int!
+}
+
+type RevenueSummary {
+  totalCollected: Decimal!
+  series: [TimeSeriesPoint!]!
+}
+
+type TimeSeriesPoint {
+  timestamp: DateTime!
+  value: Decimal!
+}
+
+type AttendanceSummary {
+  overallPercent: Decimal!
+  belowThresholdStudentCount: Int!
+}
+
+type DepartmentPerformance {
+  departmentId: UUID!
+  departmentName: String!
+  avgAttendancePercent: Decimal!
+  feeCollectionPercent: Decimal!
+}
+
+# ---------------------------------------------------------------------------
+# Registrar / Principal Dashboard
+# ---------------------------------------------------------------------------
+
+type OperationalDashboard {
+  pendingApplications: Int!
+  pendingDocumentVerifications: Int!
+  todaysAttendanceSessions: Int!
+  upcomingFeeDueInvoices: Int!
+  activeNoticesCount: Int!
+}
+
+# ---------------------------------------------------------------------------
+# Student / Parent Dashboard
+# ---------------------------------------------------------------------------
+
+type StudentDashboard {
+  student: StudentSummary!
+  attendancePercent: Decimal!
+  outstandingBalance: Decimal!
+  upcomingSessions: [UpcomingSession!]!
+  recentNotices: [NoticeSummary!]!
+}
+
+type StudentSummary {
+  id: UUID!
+  admissionNumber: String!
+  programName: String!
+  sectionName: String
+  status: String!
+}
+
+type UpcomingSession {
+  courseTitle: String!
+  startTime: DateTime!
+  roomName: String
+}
+
+type NoticeSummary {
+  id: UUID!
+  title: String!
+  publishAt: DateTime!
+}

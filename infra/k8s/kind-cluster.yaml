@@ -1,0 +1,21 @@
+# Local verification only (docs/phase-11-cloud-deployment.md). Port mappings follow
+# kind's own documented ingress-nginx pattern: the control-plane node forwards
+# host 80/443 to the node, where ingress-nginx's Service is configured as
+# hostPort (see infra/k8s/ingress-nginx-kind.yaml).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 8880
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 8843
+        protocol: TCP

@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "tsBuildInfoFile": "dist/tsconfig.lib.tsbuildinfo",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "target": "es2021",
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "src/**/*.spec.ts", "src/**/*.test.ts"]
+}

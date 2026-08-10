@@ -1,0 +1,579 @@
+openapi: 3.0.3
+info:
+  title: UDOS Core API — Wave 0 + Wave 1
+  version: 1.0.0
+  description: >
+    REST surface for tenant-scoped CRUD and command operations. Aggregation/dashboard
+    reads use the GraphQL endpoint (schema.graphql) instead — see docs/phase-4-system-design.md §1.
+    Tenant is resolved from the subdomain + JWT claim, never from a path/query parameter,
+    so it cannot be spoofed by editing the URL.
+servers:
+  - url: https://{tenant}.udos.app/api/v1
+    variables:
+      tenant:
+        default: demo
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Admissions
+    description: Lead capture through application status management.
+  - name: Students
+    description: Student Information System read/write operations.
+  - name: Attendance
+    description: Session-based attendance marking.
+  - name: Fees
+    description: Invoice payment initiation and gateway webhook handling.
+
+paths:
+  /admissions/leads:
+    get:
+      tags: [Admissions]
+      operationId: listLeads
+      summary: List leads
+      parameters:
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/LeadStatus"
+      responses:
+        "200":
+          description: Paginated list of leads
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Lead"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Admissions]
+      operationId: createLead
+      summary: Capture a new lead
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLeadRequest"
+      responses:
+        "201":
+          description: Lead created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Lead"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /admissions/applications/{applicationId}/status:
+    patch:
+      tags: [Admissions]
+      operationId: transitionApplicationStatus
+      summary: Transition an application's status (e.g. UNDER_REVIEW -> VERIFIED)
+      description: >
+        State transitions are validated server-side against the allowed graph
+        (SUBMITTED -> UNDER_REVIEW -> DOCS_PENDING|VERIFIED -> MERIT_LISTED -> OFFERED -> ENROLLED,
+        with REJECTED reachable from any pre-ENROLLED state). Invalid transitions return 409.
+      parameters:
+        - $ref: "#/components/parameters/ApplicationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  $ref: "#/components/schemas/ApplicationStatus"
+                reason:
+                  type: string
+                  description: Required when status is REJECTED — persisted to the audit log.
+      responses:
+        "200":
+          description: Updated application
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Application"
+        "409":
+          description: Invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /students:
+    get:
+      tags: [Students]
+      operationId: listStudents
+      summary: List students (ABAC-scoped — a Teacher only sees students in sections they teach)
+      parameters:
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - name: sectionId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/StudentStatus"
+      responses:
+        "200":
+          description: Paginated list of students
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Student"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /students/{studentId}:
+    get:
+      tags: [Students]
+      operationId: getStudent
+      summary: Get a single student record
+      parameters:
+        - $ref: "#/components/parameters/StudentId"
+      responses:
+        "200":
+          description: Student record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Student"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /attendance/sessions:
+    post:
+      tags: [Attendance]
+      operationId: createAttendanceSession
+      summary: Open an attendance session for a course offering
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAttendanceSessionRequest"
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceSession"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /attendance/sessions/{sessionId}/records:
+    put:
+      tags: [Attendance]
+      operationId: markAttendanceRecords
+      summary: Bulk-mark attendance for a session (idempotent — replaces prior marks for this session)
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [records]
+              properties:
+                records:
+                  type: array
+                  items:
+                    type: object
+                    required: [studentId, status]
+                    properties:
+                      studentId:
+                        type: string
+                        format: uuid
+                      status:
+                        $ref: "#/components/schemas/AttendanceStatus"
+                      remarks:
+                        type: string
+      responses:
+        "200":
+          description: >
+            Records applied. A student whose consecutive-absence threshold is crossed
+            triggers a ParentNotification domain event asynchronously (Architecture §4) —
+            this response does not wait on notification delivery.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendanceRecord"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /fees/invoices/{invoiceId}/pay:
+    post:
+      tags: [Fees]
+      summary: Initiate a payment against an invoice (creates a Razorpay order)
+      description: >
+        Returns a gateway order reference for the client to complete via Razorpay Checkout.
+        This endpoint does NOT mark the invoice paid — only the signed webhook
+        (/webhooks/razorpay) or the post-checkout verification call does, since client-side
+        success callbacks are not trustworthy on their own (see System Design §3).
+      operationId: initiateInvoicePayment
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: number
+                  format: decimal
+                  description: Omit to pay the full outstanding balance; set for a partial/installment payment.
+      responses:
+        "201":
+          description: Gateway order created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentOrder"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "409":
+          description: Invoice already fully paid, or amount exceeds outstanding balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /webhooks/razorpay:
+    post:
+      tags: [Fees]
+      operationId: receiveRazorpayWebhook
+      summary: Razorpay webhook receiver (signature-verified, idempotent by gateway event id)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Acknowledged (always 200 to a verified signature, even on a duplicate/replayed event)
+        "400":
+          description: Missing/invalid X-Razorpay-Signature header — rejected before processing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC access token issued by Keycloak; tenant + role claims embedded (Architecture §6).
+
+  parameters:
+    PageCursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+      description: Opaque cursor from the previous page's meta.nextCursor.
+    PageLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    ApplicationId:
+      name: applicationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    StudentId:
+      name: studentId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >
+        Client-generated UUID. A retried request with the same key returns the original
+        response instead of creating a second payment order — required on all
+        money-movement endpoints (System Design §3).
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Unauthorized:
+      description: Missing/invalid token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Token valid but RBAC/ABAC denies this action
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource does not exist, or exists in a different tenant (identical response — see System Design §4)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ValidationError:
+      description: Request failed schema/business validation
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      description: RFC 7807-style problem detail.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          example: "https://udos.app/errors/validation-error"
+        title:
+          type: string
+          example: "Validation failed"
+        status:
+          type: integer
+          example: 400
+        detail:
+          type: string
+        traceId:
+          type: string
+          description: Correlates to the OpenTelemetry trace (Architecture §7) for support triage.
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+
+    PaginatedResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items: {}
+        meta:
+          type: object
+          properties:
+            nextCursor:
+              type: string
+              nullable: true
+            hasMore:
+              type: boolean
+
+    LeadStatus:
+      type: string
+      enum: [NEW, CONTACTED, COUNSELLING, APPLIED, CONVERTED, LOST]
+
+    ApplicationStatus:
+      type: string
+      enum: [SUBMITTED, UNDER_REVIEW, DOCS_PENDING, VERIFIED, MERIT_LISTED, OFFERED, ENROLLED, REJECTED]
+
+    StudentStatus:
+      type: string
+      enum: [ACTIVE, ON_LEAVE, GRADUATED, DROPPED_OUT, SUSPENDED]
+
+    AttendanceStatus:
+      type: string
+      enum: [PRESENT, ABSENT, LATE, EXCUSED]
+
+    Lead:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        source:
+          type: string
+        status:
+          $ref: "#/components/schemas/LeadStatus"
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateLeadRequest:
+      type: object
+      required: [fullName, phone, source]
+      properties:
+        fullName:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        source:
+          type: string
+        programInterestCode:
+          type: string
+
+    Application:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        applicantName:
+          type: string
+        programId:
+          type: string
+          format: uuid
+        termId:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/ApplicationStatus"
+        submittedAt:
+          type: string
+          format: date-time
+
+    Student:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        admissionNumber:
+          type: string
+        programId:
+          type: string
+          format: uuid
+        batchId:
+          type: string
+          format: uuid
+        sectionId:
+          type: string
+          format: uuid
+          nullable: true
+        rollNumber:
+          type: string
+          nullable: true
+        status:
+          $ref: "#/components/schemas/StudentStatus"
+
+    CreateAttendanceSessionRequest:
+      type: object
+      required: [courseOfferingId, sessionDate, startTime, endTime]
+      properties:
+        courseOfferingId:
+          type: string
+          format: uuid
+        sessionDate:
+          type: string
+          format: date
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+
+    AttendanceSession:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        courseOfferingId:
+          type: string
+          format: uuid
+        sessionDate:
+          type: string
+          format: date
+
+    AttendanceRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        studentId:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/AttendanceStatus"
+
+    PaymentOrder:
+      type: object
+      properties:
+        invoiceId:
+          type: string
+          format: uuid
+        gateway:
+          type: string
+          example: RAZORPAY
+        gatewayOrderId:
+          type: string
+        amount:
+          type: number
+          format: decimal
+        currency:
+          type: string
+          example: INR

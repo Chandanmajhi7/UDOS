@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+  namespace: udos
+data:
+  PORT: '3000'
+  # Local-cluster placeholder — Keycloak isn't deployed in this verification
+  # (Phase 10 already proved the auth flow itself against a real instance).
+  # JWKS fetch is lazy (jose's createRemoteJWKSet), so the API still boots and
+  # serves its health check without this being reachable; only token verification
+  # would fail until it is. Production points this at the real realm issuer URL.
+  KEYCLOAK_ISSUER: 'http://keycloak.udos.svc.cluster.local:8080/realms/udos'

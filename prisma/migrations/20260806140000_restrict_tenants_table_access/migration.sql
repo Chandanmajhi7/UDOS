@@ -1,0 +1,13 @@
+-- The tenants table has no tenant_id column (it IS the tenant root), so it cannot be
+-- protected by the RLS pattern every other table uses (docs/phase-3-database-design.md §3).
+-- Left ungated, the ordinary udos_app role — used for every tenant's regular request
+-- traffic — could read or WRITE any tenant's row, including another tenant's, which is
+-- a horizontal privilege escalation: a bug in one tenant's request handler could
+-- suspend, rename, or reconfigure a completely different institution.
+--
+-- Fix: udos_app keeps SELECT only (ordinary per-tenant code legitimately needs to read
+-- its own already-resolved tenant row, e.g. to display the institution's name). All
+-- writes — provisioning, suspension, offboarding — are restricted to
+-- udos_platform_admin, matching Architecture §6's "Super Admin bypass" model: a narrow,
+-- explicit, audited capability, never reachable from tenant-facing request handlers.
+REVOKE INSERT, UPDATE, DELETE ON tenants FROM udos_app;
